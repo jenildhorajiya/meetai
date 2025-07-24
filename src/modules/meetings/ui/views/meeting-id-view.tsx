@@ -79,8 +79,6 @@ const handleRemoveMeeting = async () => {
         {isActive && <ActiveState meetingId={meetingId} />}
         {isUpcoming && (<UpcomingState
         meetingId={meetingId}
-        onCancelMeeting={()=>{}}
-        isCanceling={false}
         />)}
       </div>
     </>
