@@ -1,5 +1,5 @@
 import {createAvatar} from "@dicebear/core"
-import {bottts, botttsNeutral, initials} from "@dicebear/collection"
+import {botttsNeutral, initials} from "@dicebear/collection"
 
 import { cn } from "@/lib/utils"
 import { Avatar,AvatarFallback,AvatarImage } from "@/components/ui/avatar"
