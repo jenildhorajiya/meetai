@@ -4,7 +4,7 @@ MeetAI runs AI-assisted video meetings with Stream Video and OpenAI Realtime. Af
 
 ## Local development
 
-Use Node.js 22.12 or newer. Run `npm ci`, supply the variables below in a gitignored `.env`, then run `npm run dev`. To initialize a new development database, run `npm run db:push` against that database.
+Use Node.js 22, version 22.12 or newer. Run `npm ci`, supply the variables below in a gitignored `.env`, then run `npm run dev`. To initialize a new development database, run `npm run db:push` against that database.
 
 Run `npm run lint` and `npm run build` to check changes.
 
