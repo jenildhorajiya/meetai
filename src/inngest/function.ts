@@ -1,14 +1,12 @@
 import JSONL from "jsonl-parse-stringify";
-import {createAgent, openai, TextMessage} from "@inngest/agent-kit"
+import OpenAI from "openai";
 import { inngest } from "@/inngest/client";
 import { StreamTranscriptItem } from "@/modules/meetings/types";
 import { agents, meetings, user } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 
-const summarizer = createAgent({
-  name: "summarizer",
-  system: `
+const summaryInstructions = `
   You are an expert summarizer. You write readable, concise, simple content. You are given a transcript of a meeting and you need to summarize it.
 
 Use the following markdown structure for every output:
@@ -29,16 +27,18 @@ Example:
 - Feature X automatically does Y
 - Mention of integration with Z
 
-  `.trim(),
-  model: openai({model: "gpt-4o", apiKey: process.env.OPENAI_API_KEY}),
-})
+  `.trim();
 
 export const meetingsProcessing = inngest.createFunction(
   { id: "meetings/processing" },
   { event: "meetings/processing" },
   async ({ event, step }) => {
     const response = await step.run("fetch-transcript", async () => {
-      return fetch(event.data.transcriptUrl).then((res) => res.text());
+      const transcript = await fetch(event.data.transcriptUrl);
+      if (!transcript.ok) {
+        throw new Error(`Transcript download failed with HTTP ${transcript.status}`);
+      }
+      return transcript.text();
     });
 
     const transcript = await step.run("parse-transcript", async () => {
@@ -90,14 +90,24 @@ export const meetingsProcessing = inngest.createFunction(
         }
       });
     });
-    const {output} = await summarizer.run(
-      "Summarize the fllowing transcript: " + JSON.stringify(transcriptWithSpeakers),
-    )
+    const summary = await step.run("summarize-transcript", async () => {
+      const openai = new OpenAI();
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: summaryInstructions },
+          { role: "user", content: JSON.stringify(transcriptWithSpeakers) },
+        ],
+      });
+      const content = response.choices[0]?.message.content?.trim();
+      if (!content) throw new Error("OpenAI returned an empty meeting summary");
+      return content;
+    });
     await step.run("save-summary", async()=>{
       await db
       .update(meetings)
       .set({
-        summary: (output[0] as TextMessage).content as string,
+        summary,
         status: "completed",
       })
       .where(eq(meetings.id, event.data.meetingId));

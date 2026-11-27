@@ -15,9 +15,10 @@ import "@stream-io/video-react-sdk/dist/css/styles.css";
 
 interface Props {
   onJoin: () => void;
+  joining: boolean;
 }
 
-export const CallLobby = ({ onJoin }: Props) => {
+export const CallLobby = ({ onJoin, joining }: Props) => {
   const { useCameraState, useMicrophoneState } = useCallStateHooks();
   const { hasBrowserPermission: hasMicPermission } = useMicrophoneState();
   const { hasBrowserPermission: hasCameraPermission } = useCameraState();
@@ -76,9 +77,10 @@ export const CallLobby = ({ onJoin }: Props) => {
             </Button>
             <Button
             onClick={onJoin}
+            disabled={joining}
             >
               <LogInIcon />
-              Join Call
+              {joining ? "Joining…" : "Join Call"}
             </Button>
           </div>
         </div>

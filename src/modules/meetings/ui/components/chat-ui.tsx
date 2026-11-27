@@ -7,9 +7,8 @@ import {
     Thread,
     Window,
 } from 'stream-chat-react';
-import {useState, useEffect} from 'react';
+import {useCallback, useMemo} from 'react';
 import {useMutation} from '@tanstack/react-query';
-import type { Channel as StreamChannel} from 'stream-chat';
 import { useTRPC } from "@/trpc/client";
 import {LoadingState} from "@/components/loading-state";
 
@@ -17,7 +16,6 @@ import 'stream-chat-react/dist/css/v2/index.css';
 
 interface ChatUIProps {
     meetingId: string;
-    meetingName: string;
     userId: string;
     userName: string;
     userImage: string | undefined;
@@ -25,7 +23,6 @@ interface ChatUIProps {
 
 export const ChatUI = ({
     meetingId,
-    meetingName,
     userId,
     userName,
     userImage,
@@ -33,10 +30,13 @@ export const ChatUI = ({
     const trpc = useTRPC();
     const {mutateAsync: generateChatToken} = useMutation(trpc.meetings.generateChatToken.mutationOptions());
 
-    const [channel, setChannel] = useState<StreamChannel>();
+    const tokenProvider = useCallback(
+        () => generateChatToken({ meetingId }),
+        [generateChatToken, meetingId]
+    );
     const client = useCreateChatClient({
         apiKey: process.env.NEXT_PUBLIC_STREAM_CHAT_API_KEY!,
-        tokenOrProvider: generateChatToken,
+        tokenOrProvider: tokenProvider,
         userData: {
             id: userId,
             name: userName,
@@ -44,15 +44,9 @@ export const ChatUI = ({
         }
     });
 
-    useEffect(() => {
-        if(!client) return;
-        const channel = client.channel('messaging', meetingId, {
-            members: [userId],
-        })
-        setChannel(channel);
-    }, [client, meetingId, meetingName, userId]);
+    const channel = useMemo(() => client?.channel("messaging", meetingId), [client, meetingId]);
 
-    if(!client) {
+    if (!client || !channel) {
         return (
             <LoadingState
             title="Loading Chat"

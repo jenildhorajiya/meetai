@@ -14,11 +14,11 @@ export const CallView = ({
 }: Props) => {
   const trpc = useTRPC();
   const { data } = useSuspenseQuery(trpc.meetings.getOne.queryOptions({ id: meetingId }));
-    if (data.status === "completed") {
+    if (data.status !== "upcoming" && data.status !== "active") {
   return (
     <div className="flex h-screen items-center justify-center">
       <ErrorState
-        title="Meeting has ended"
+        title="Meeting is unavailable"
         description="You can no longer join this meeting"
       />
     </div>

@@ -1,36 +1,30 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MeetAI
 
-## Getting Started
+MeetAI runs AI-assisted video meetings with Stream Video and OpenAI Realtime. After each meeting, Inngest processes the transcript and the meeting owner can review the recording, summary, and chat.
 
-First, run the development server:
+## Local development
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Use Node.js 22.12 or newer. Run `npm ci`, supply the variables below in a gitignored `.env`, then run `npm run dev`. To initialize a new development database, run `npm run db:push` against that database.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Run `npm run lint` and `npm run build` to check changes.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Service | Variables |
+| --- | --- |
+| Neon PostgreSQL | `DATABASE_URL` |
+| Better Auth | `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` |
+| Stream Video | `NEXT_PUBLIC_STREAM_VIDEO_API_KEY`, `STREAM_VIDEO_SECRET_KEY` |
+| Stream Chat | `NEXT_PUBLIC_STREAM_CHAT_API_KEY`, `STREAM_CHAT_SECRET_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| Inngest | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` for hosted Inngest |
+| Polar Sandbox | `POLAR_ACCESS_TOKEN` |
+| Social sign-in | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
 
-## Learn More
+Set `BETTER_AUTH_URL` to the origin receiving sign-in requests. Configure provider callbacks at that origin under `/api/auth/callback/github` and `/api/auth/callback/google`.
 
-To learn more about Next.js, take a look at the following resources:
+## Vercel preview
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Configure the Preview environment with test service credentials and deploy the PR branch. Configure Stream Video and Chat webhook delivery to `/api/webhook` and sync Inngest with `/api/inngest` on the preview host. Both services need to reach their endpoints if deployment protection is enabled. Use test service integrations for preview so their callbacks and test data stay separate from production.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Sign in, create an agent and meeting, and confirm two-way audio. End the meeting as its owner and verify the transcript, recording, summary, and follow-up chat.

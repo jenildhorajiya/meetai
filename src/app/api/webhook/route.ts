@@ -18,20 +18,12 @@ import { ChatCompletionMessageParam } from "openai/resources/index.mjs";
 import { generateAvatarUri } from "@/lib/avatar";
 
 
-const openaiClient = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
-
-function verifySignatureWithSDK(body: string, signature: string): boolean {
-  return streamVideo.verifyWebhook(body, signature);
-}
-
 // Share concurrent startup attempts within the same server process.
 const agentStartups = new Map<string, Promise<string | undefined>>();
 
 async function startMeetingAgent(meetingId: string) {
   const [meeting] = await db
-    .select({ status: meetings.status, agentId: meetings.agentId })
+    .select({ status: meetings.status, agentId: meetings.agentId, userId: meetings.userId })
     .from(meetings)
     .where(eq(meetings.id, meetingId));
 
@@ -41,7 +33,7 @@ async function startMeetingAgent(meetingId: string) {
   const [agent] = await db
     .select({ instructions: agents.instructions })
     .from(agents)
-    .where(eq(agents.id, meeting.agentId));
+    .where(and(eq(agents.id, meeting.agentId), eq(agents.userId, meeting.userId)));
 
   if (!agent) return "Agent not found";
 
@@ -77,9 +69,6 @@ export async function POST(req: NextRequest) {
     );
   }
   const body = await req.text();
-  if (!verifySignatureWithSDK(body, signature)) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-  }
   let payload: unknown;
   try {
     payload = JSON.parse(body) as Record<string, unknown>;
@@ -90,6 +79,16 @@ export async function POST(req: NextRequest) {
     );
   }
   const eventType = (payload as Record<string, unknown>)?.type;
+  const isChatEvent = apiKey === process.env.NEXT_PUBLIC_STREAM_CHAT_API_KEY &&
+    (typeof eventType !== "string" || !eventType.startsWith("call."));
+  const isVideoEvent = apiKey === process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY &&
+    eventType !== "message.new";
+  if (
+    !(isChatEvent && streamChat.verifyWebhook(body, signature)) &&
+    !(isVideoEvent && streamVideo.verifyWebhook(body, signature))
+  ) {
+    return NextResponse.json({ error: "Invalid signature or API key" }, { status: 401 });
+  }
   if (eventType === "call.session_started") {
     const event = payload as CallSessionStartedEvent;
     const meetingId = event.call.custom?.meetingId;
@@ -130,11 +129,11 @@ export async function POST(req: NextRequest) {
       );
     }
     const [meeting] = await db
-      .select({ agentId: meetings.agentId })
+      .select({ userId: meetings.userId })
       .from(meetings)
       .where(eq(meetings.id, meetingId));
 
-    if (!meeting || event.participant.user.id === meeting.agentId) {
+    if (!meeting || event.participant.user.id !== meeting.userId) {
       return NextResponse.json({ status: "ok" });
     }
 
@@ -178,6 +177,7 @@ export async function POST(req: NextRequest) {
       );
     }
     await inngest.send({
+      id: req.headers.get("x-webhook-id") ?? undefined,
       name: "meetings/processing",
       data: {
         meetingId: updatedMeeting.id,
@@ -208,95 +208,74 @@ export async function POST(req: NextRequest) {
     const [existingMeeting] = await db
       .select()
       .from(meetings)
-      .where(and(eq(meetings.id, channelId), eq(meetings.status, "completed")));
-      if (!existingMeeting) {
-        return NextResponse.json(
-          { error: "Meeting not found" },
-          { status: 404 }
-        );
-      }
-      const [existingAgent] = await db
+      .where(and(
+        eq(meetings.id, channelId),
+        eq(meetings.status, "completed"),
+        eq(meetings.userId, userId)
+      ));
+
+    if (!existingMeeting || event.channel_type !== "messaging") {
+      return NextResponse.json({ status: "ok" });
+    }
+
+    const [existingAgent] = await db
       .select()
       .from(agents)
-      .where(eq(agents.id, existingMeeting.agentId));
+      .where(and(eq(agents.id, existingMeeting.agentId), eq(agents.userId, userId)));
 
-      if (!existingAgent) {
-        return NextResponse.json(
-          { error: "Agent not found" },
-          { status: 404 }
-        );
-      }
+    if (!existingAgent) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
 
-      if (userId !== existingAgent.id) {
-        const instructions = `
-      You are an AI assistant helping the user revisit a recently completed meeting.
-      Below is a summary of the meeting, generated from the transcript:
-      
-      ${existingMeeting.summary}
-      
-      The following are your original instructions from the live meeting assistant. Please continue to follow these behavioral guidelines as you assist the user:
-      
-      ${existingAgent.instructions}
-      
-      The user may ask questions about the meeting, request clarifications, or ask for follow-up actions.
-      Always base your responses on the meeting summary above.
-      
-      You also have access to the recent conversation history between you and the user. Use the context of previous messages to provide relevant, coherent, and helpful responses. If the user's question refers to something discussed earlier, make sure to take that into account and maintain continuity in the conversation.
-      
-      If the summary does not contain enough information to answer a question, politely let the user know.
-      
-      Be concise, helpful, and focus on providing accurate information from the meeting and the ongoing conversation.
-      `;
+    const instructions = `
+You are an AI assistant helping the user revisit a recently completed meeting.
+Answer using the meeting summary and recent conversation. If the summary has insufficient information, say so.
+Follow the original agent instructions below and keep responses concise.
 
-      const channel = streamChat.channel("messaging", channelId);
-      await channel.watch();
-      const previousMessages = channel.state.messages
-        .slice(-5)
-        .filter((msg) => msg.text && msg.text.trim() !== "")
-        .map<ChatCompletionMessageParam>((message) => ({
-          role: message.user?.id === existingAgent.id ? "assistant" : "user",
-          content: message.text || "",
-        }))
+Meeting summary:
+${existingMeeting.summary}
 
-        const GPTResponse = await openaiClient.chat.completions.create({
-          messages: [
-            { role: "system", content: instructions},
-            ...previousMessages,
-            { role: "user", content: text }
-          ],
-          model: "gpt-4o",
-        })
+Original agent instructions:
+${existingAgent.instructions}
+    `.trim();
 
-        const GPTResponseText = GPTResponse.choices[0].message.content;
-        if (!GPTResponseText) {
-          return NextResponse.json(
-            { error: "No response from AI" },
-            { status: 400 }
-          );
-        }
+    const channel = streamChat.channel("messaging", channelId);
+    const { messages } = await channel.query({ messages: { limit: 6 } });
+    const history = messages
+      .filter((message) =>
+        message.id !== event.message?.id &&
+        (message.user?.id === userId || message.user?.id === existingAgent.id) &&
+        message.text?.trim()
+      )
+      .slice(-5)
+      .map<ChatCompletionMessageParam>((message) => ({
+        role: message.user?.id === existingAgent.id ? "assistant" : "user",
+        content: message.text ?? "",
+      }));
 
-        const avatarUrl = generateAvatarUri({
-          seed: existingAgent.name,
-          variant: "botttsNeutral",
-        })
+    const openai = new OpenAI();
+    const response = await openai.chat.completions.create({
+      messages: [
+        { role: "system", content: instructions },
+        ...history,
+        { role: "user", content: text },
+      ],
+      model: "gpt-4o",
+    });
 
-        streamChat.upsertUser({
-          id: existingAgent.id,
-          name: existingAgent.name,
-          image: avatarUrl
-        })
+    const reply = response.choices[0]?.message.content?.trim();
+    if (!reply) {
+      return NextResponse.json({ error: "No response from AI" }, { status: 502 });
+    }
 
-        channel.sendMessage({
-          text: GPTResponseText,
-          user: {
-            id: existingAgent.id,
-            name: existingAgent.name,
-            image: avatarUrl
-          }
-        })
+    await streamChat.upsertUser({
+      id: existingAgent.id,
+      name: existingAgent.name,
+      image: generateAvatarUri({ seed: existingAgent.name, variant: "botttsNeutral" }),
+    });
 
-      }
+    await channel.sendMessage({ text: reply, user_id: existingAgent.id });
   }
-  
+
   return NextResponse.json({ status: "ok" });
-} 
+}

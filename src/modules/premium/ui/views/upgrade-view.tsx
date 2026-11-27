@@ -28,6 +28,9 @@ export const UpgradeView = () => {
         </h5>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {products.map((product) => {
+            const price = product.prices.find((price) => !price.isArchived);
+            if (!price) return null;
+
             const isCurrentProduct = currentSubscription?.id === product.id;
             const isPremium = !!currentSubscription;
             let buttonText = "Upgrade";
@@ -52,12 +55,12 @@ export const UpgradeView = () => {
                 }
                 title={product.name}
                 price={
-                  product.prices[0].amountType === "fixed"
-                    ? product.prices[0].priceAmount / 100
+                  price.amountType === "fixed"
+                    ? price.priceAmount / 100
                     : 0
                 }
                 description={product.description}
-                priceSuffix={`/${product.prices[0].recurringInterval}`}
+                priceSuffix={product.recurringInterval ? `/${product.recurringInterval}` : ""}
                 features={product.benefits.map(
                   (benefit) => benefit.description
                 )}
