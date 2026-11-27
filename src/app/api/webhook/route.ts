@@ -1,8 +1,8 @@
 import OpenAI from "openai";
-import { and, eq, not } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse, NextRequest } from "next/server";
 import {
-  CallEndedEvent,
+  CallSessionEndedEvent,
   CallTranscriptionReadyEvent,
   CallRecordingReadyEvent,
   CallSessionParticipantLeftEvent,
@@ -24,6 +24,47 @@ const openaiClient = new OpenAI({
 
 function verifySignatureWithSDK(body: string, signature: string): boolean {
   return streamVideo.verifyWebhook(body, signature);
+}
+
+// Share concurrent startup attempts within the same server process.
+const agentStartups = new Map<string, Promise<string | undefined>>();
+
+async function startMeetingAgent(meetingId: string) {
+  const [meeting] = await db
+    .select({ status: meetings.status, agentId: meetings.agentId })
+    .from(meetings)
+    .where(eq(meetings.id, meetingId));
+
+  if (!meeting) return "Meeting not found";
+  if (meeting.status !== "upcoming") return;
+
+  const [agent] = await db
+    .select({ instructions: agents.instructions })
+    .from(agents)
+    .where(eq(agents.id, meeting.agentId));
+
+  if (!agent) return "Agent not found";
+
+  const realtimeClient = await streamVideo.video.connectOpenAi({
+    call: streamVideo.video.call("default", meetingId),
+    openAiApiKey: process.env.OPENAI_API_KEY!,
+    agentUserId: meeting.agentId,
+    model: "gpt-realtime",
+  });
+
+  try {
+    realtimeClient.updateSession({ instructions: agent.instructions });
+    const [activatedMeeting] = await db
+      .update(meetings)
+      .set({ status: "active", startedAt: new Date() })
+      .where(and(eq(meetings.id, meetingId), eq(meetings.status, "upcoming")))
+      .returning({ id: meetings.id });
+
+    if (!activatedMeeting) realtimeClient.disconnect();
+  } catch (error) {
+    realtimeClient.disconnect();
+    throw error;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -58,48 +99,26 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const [existingMeeting] = await db
-      .select()
-      .from(meetings)
-      .where(
-        and(
-          eq(meetings.id, meetingId),
-          not(eq(meetings.status, "completed")),
-          not(eq(meetings.status, "active")),
-          not(eq(meetings.status, "cancelled")),
-          not(eq(meetings.status, "processing"))
-        )
-      );
-    if (!existingMeeting) {
-      return NextResponse.json(
-        { error: "Meeting not found or already completed" },
-        { status: 404 }
-      );
+    let startup = agentStartups.get(meetingId);
+    if (!startup) {
+      startup = startMeetingAgent(meetingId).finally(() => {
+        agentStartups.delete(meetingId);
+      });
+      agentStartups.set(meetingId, startup);
     }
-    await db
-      .update(meetings)
-      .set({
-        status: "active",
-        startedAt: new Date(),
-      })
-      .where(eq(meetings.id, existingMeeting.id));
 
-    const [existingAgent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, existingMeeting.agentId));
-    if (!existingAgent) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    try {
+      const error = await startup;
+      if (error) {
+        return NextResponse.json({ error }, { status: 404 });
+      }
+    } catch (error) {
+      console.error("Failed to start meeting agent", { meetingId, error });
+      return NextResponse.json(
+        { error: "Failed to start meeting agent" },
+        { status: 503 }
+      );
     }
-    const call = streamVideo.video.call("default", meetingId);
-    const realtimeClient = await streamVideo.video.connectOpenAi({
-      call,
-      openAiApiKey: process.env.OPENAI_API_KEY!,
-      agentUserId: existingAgent.id,
-    });
-    realtimeClient.updateSession({
-      instructions: existingAgent.instructions,
-    });
   } else if (eventType === "call.session_participant_left") {
     const event = payload as CallSessionParticipantLeftEvent;
     const meetingId = event.call_cid.split(":")[1]; //call_cid is formatted as "type:id"
@@ -110,10 +129,19 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    const [meeting] = await db
+      .select({ agentId: meetings.agentId })
+      .from(meetings)
+      .where(eq(meetings.id, meetingId));
+
+    if (!meeting || event.participant.user.id === meeting.agentId) {
+      return NextResponse.json({ status: "ok" });
+    }
+
     const call = streamVideo.video.call("default", meetingId);
     await call.end();
   } else if (eventType === "call.session_ended") {
-    const event = payload as CallEndedEvent;
+    const event = payload as CallSessionEndedEvent;
     const meetingId = event.call.custom?.meetingId;
     if (!meetingId) {
       return NextResponse.json(
@@ -127,7 +155,12 @@ export async function POST(req: NextRequest) {
       status: "processing",
       endedAt: new Date(),
     })
-    .where(and(eq(meetings.id, meetingId), eq(meetings.status, "active")));
+      .where(
+        and(
+          eq(meetings.id, meetingId),
+          inArray(meetings.status, ["upcoming", "active"])
+        )
+      );
   } else if (eventType === "call.transcription_ready") {
     const event = payload as CallTranscriptionReadyEvent;
     const meetingId = event.call_cid.split(":")[1]; //call_cid is formatted as "type:id"
